@@ -739,7 +739,7 @@ merged_df <- merge(df_tabela, df_margem, by = c("uf_entrega", "regiao_entrega", 
 
 # Criando a coluna "Margem" no dataframe "merged_df"
 merged_df <- merged_df %>%
-  mutate(Margem = case_when(
+  mutate("Margem Tier" = case_when(
     Margem > 10 ~ "Tier 1",
     Margem > 5 & Margem <= 10 ~ "Tier 2",
     Margem > 0 & Margem <= 5 ~ "Tier 3",
