@@ -649,13 +649,21 @@ WITH bonificacoes AS (
   WHERE 1=1
   GROUP BY 1,2
   HAVING menor_threshold_calculado IS NOT NULL --só a partir de quando temos regras disponíveis
+),marcador_pedido_aux as(select distinct pedido_beagle, max(fpf.chv_entrega) chv_entrega, max(fpf.chv_canal_venda) chv_canal_venda, max(fpf.chv_setor_censitario) chv_setor_censitario, max(fpf.chv_municipio_entrega) chv_municipio_entrega from petlove-dataeng-prod-01.dw_corporativo.ft_pedido_faturado fpf
+group by 1
 )
---, base_final AS (
+,marcador_pedido as(
+  select pedido_beagle, nm_municipio, uf, nm_regiao, localidade, cep_inicial, cep_final , canal_venda, subcanal_venda from marcador_pedido_aux fpf
+left join petlove-dataeng-prod-01.dw_corporativo.dim_municipio dm on dm.chv_municipio = fpf.chv_municipio_entrega
+left join petlove-dataeng-prod-01.dw_corporativo.dim_canal_venda dcv on dcv.chv_canal_venda = fpf.chv_canal_venda
+left join petlove-dataeng-prod-01.dw_corporativo.dim_setor_censitario dsc on dsc.chv_setor_censitario= fpf.chv_setor_censitario
+)
 SELECT
   base_analitica.id_pedido
   , base_analitica.data_pedido
   , base_analitica.regiao_entrega
   , base_analitica.uf_entrega
+  , b.localidade
   , base_analitica.cidade_entrega
   , base_analitica.bairro_entrega
   , base_analitica.cep_entrega
@@ -694,6 +702,8 @@ SELECT
 FROM base_analitica
 LEFT JOIN base_thresholds_calculados threshold_calculado
   ON base_analitica.id_pedido = threshold_calculado.id_pedido
+left join marcador_pedido b
+on base_analitica.id_pedido = b.pedido_beagle
 WHERE 1=1
 order by rand()
 limit 3000000"
@@ -702,6 +712,7 @@ limit 3000000"
 tb <- bq_project_query(projectid,query)
 df = bq_table_download(tb) %>% data.frame()
 
+head(df) %>% View()
 
 create_intervals <- function(data) {
   min_value <- 0
@@ -709,19 +720,40 @@ create_intervals <- function(data) {
   cut(data, breaks = c(seq(min_value, max_value, by = 10), Inf), include.lowest = TRUE, right = FALSE)
 }
 
+### Tratando localidade NA
+df <- df %>%
+  mutate(localidade = coalesce(localidade, "Não Encontrada"))
+df <- df %>%
+  mutate(localidade = case_when(localidade=='' ~ "Não Encontrada", TRUE ~ localidade))
+### Juntando Todas as uf do norte
 
-# Aplicando a função mutate com case_when
+df<- df %>%
+ mutate(uf_nova = case_when(regiao_entrega == 'Norte' ~ 'Norte',TRUE~uf_entrega))
+
+### Criando faixas para os tickets médio
 df <- df %>%
   mutate(Faixa = case_when(
     receita_bruta_pedido <= 300 ~ as.character(create_intervals(receita_bruta_pedido)),
     TRUE ~ '+300'
   ))
 
-df_margem <- df %>% group_by(uf_entrega,regiao_entrega,Faixa) %>%
-  summarise(Margem = sum(margem_2_ajustada)/sum(receita_liquida_operacional)*100)
+#Criando um dataframe que pega a margem por faixa, uf e localidade
+df_margem <- df %>% filter(data_pedido >= '2023-08-01') %>% group_by(uf_nova,localidade,Faixa) %>%
+  summarise(Margem = sum(margem_2_ajustada)/sum(receita_liquida_operacional))
+View(df_margem)
+### criando um dataframe que pega a margem por uf e localidade  e será uma coluna extra no df
+df_margem_geral <-df %>% filter(data_pedido >= '2023-08-01') %>% group_by(uf_nova,localidade) %>%
+  summarise(Margem = sum(margem_2_ajustada)/sum(receita_liquida_operacional))
+View(df_margem_geral)
+#Para a tabela principal, filtro agosto de 2023 pois é onde temos os dados confiáveis de Threshold, Além disso
+## faço médias/medianas tirando os valores NA pois há momentos em que nao temos
+## o threshold disponivel
 
-df_tabela <- df %>% filter(data_pedido >= '2023-08-01') %>% group_by(uf_entrega,regiao_entrega) %>%
+df_tabela <- df %>% filter(data_pedido >= '2023-08-01') %>% group_by(uf_nova,localidade) %>%
   summarise("Vendas" = n_distinct(id_pedido),
+  'Margem Ajustada' = sum(margem_2_ajustada),
+  'Margem Recomposta' = sum(margem_recomposta),
+  "Receita Liquida Operacional" = sum(receita_liquida_operacional),
   "Ticket Médio" = mean(receita_bruta_pedido),
   "Ticket Mediano" = median(receita_bruta_pedido),
   "Threshold_min" = min(threshold_final,na.rm = TRUE),
@@ -729,23 +761,86 @@ df_tabela <- df %>% filter(data_pedido >= '2023-08-01') %>% group_by(uf_entrega,
   "Threshold_medio" = mean(threshold_final,na.rm = TRUE),
   "Threshold_mediano" = median(threshold_final,na.rm = TRUE))
 
+#Repasso as faixas para os valores calculados
 df_tabela <- df_tabela %>%
   mutate(Faixa = case_when(
     `Ticket Mediano` <= 300 ~ as.character(create_intervals(`Ticket Mediano`)),
     TRUE ~ '+300'
   ))
 
-merged_df <- merge(df_tabela, df_margem, by = c("uf_entrega", "regiao_entrega", "Faixa"), all.x = TRUE)
-
-# Criando a coluna "Margem" no dataframe "merged_df"
+#Unindo as tabelas
+merged_df <- merge(df_tabela, df_margem, by = c("uf_nova", "localidade", "Faixa"), all.x = TRUE)
+merged_df <- merge(merged_df, df_margem_geral, by = c("uf_nova", "localidade"), all.x = TRUE)
+colnames(merged_df)[14:15] <- c("Margem Faixa","Margem Geral")
+View(merged_df)
+#Criando Tier da Margem da Faixa
 merged_df <- merged_df %>%
-  mutate("Margem Tier" = case_when(
-    Margem > 10 ~ "Tier 1",
-    Margem > 5 & Margem <= 10 ~ "Tier 2",
-    Margem > 0 & Margem <= 5 ~ "Tier 3",
-    Margem <= 0 ~ "Tier 4",
+    mutate(`Margem Tier` = case_when(
+    `Margem Faixa` > .10 ~ "Tier 1",
+    `Margem Faixa` > .05 & `Margem Faixa` <= .10 ~ "Tier 2",
+    `Margem Faixa` > .0 & `Margem Faixa` <= .05 ~ "Tier 3",
+    `Margem Faixa` <= .0 ~ "Tier 4",
     TRUE ~ NA_character_ # Se nenhuma condição for atendida, atribui NA
   ))
 
+
+merged_df <- merged_df %>%
+    mutate(`Margem Geral Tier` = case_when(
+    `Margem Geral` > .10 ~ "Tier 1",
+    `Margem Geral` > .05 & `Margem Geral` <= .10 ~ "Tier 2",
+    `Margem Geral` > .0 & `Margem Geral` <= .05 ~ "Tier 3",
+    `Margem Geral` <= .0 ~ "Tier 4",
+    TRUE ~ NA_character_ # Se nenhuma condição for atendida, atribui NA
+  ))
+## Criando Tier do Ticket Medio
+merged_df <- merged_df %>%
+  mutate(`Ticket Tier` = case_when(
+    `Threshold_mediano`/`Ticket Mediano` - 1 < .15 & `Threshold_mediano`/`Ticket Mediano` - 1  > .0 ~ "Tier 1",
+    `Threshold_mediano`/`Ticket Mediano` - 1 >= .15 ~ "Tier 2",
+    `Ticket Mediano`/`Threshold_mediano` - 1 < .15 & `Ticket Mediano`/`Threshold_mediano` -1 >.0 ~ "Tier 3",
+    `Ticket Mediano`/`Threshold_mediano` - 1 >= 0.15 ~ "Tier 4",
+    TRUE ~ NA_character_ # Se nenhuma condição for atendida, atribui NA
+  ))
+
+
+
+#Agora, vou criar uma tabela que por região e localidade, vai ter a soma de margem e receita
+
+df_agregado_tier  <- merged_df %>% group_by(`Ticket Tier`,`Margem Tier`) %>%
+  summarise(Vendas = sum(Vendas),
+  "Margem Recomposta" = sum(`Margem Recomposta`)/sum(`Receita Liquida Operacional`),
+  "Margem Ajustada" =  sum(`Margem Ajustada`)/sum(`Receita Liquida Operacional`)) %>% na.omit()
+
+
+View(df_agregado_tier)
+
 library(readr)
-write_csv(merged_df,"theshold.csv")
+write_csv(merged_df,"theshold_nova.csv")
+View(merged_df)
+
+
+
+
+##### Dados Slides
+library(zoo)
+library(lubridate)
+
+
+# Converter para o formato de data
+df$data_pedido <- as.Date(df$data_pedido)
+
+
+periodo <- df %>%  mutate(anomes = floor_date(data_pedido,'month')) %>% 
+group_by(anomes) %>% summarise(Total = n_distinct(id_pedido)) %>% mutate(Percentual = Total/sum(Total)*100)
+
+
+grafico <- periodo %>% 
+  filter(anomes >= '2023-01-01') %>% 
+  ggplot(aes(x= anomes, y=Percentual, label = paste0(round(Percentual,2),'%'))) + 
+  geom_col(fill = 'purple') +
+  geom_text(position = position_stack(vjust = 1.1), color = 'black', size = 4) +
+  scale_fill_manual(values = "purple") + labs(title = 'Percentual de pedidos por Ano-mes')
+
+
+ggsave("grafico.png", plot = grafico, width = 10, height = 6, units = "in", dpi = 300)
+
