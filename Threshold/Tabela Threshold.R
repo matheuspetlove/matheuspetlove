@@ -706,7 +706,7 @@ left join marcador_pedido b
 on base_analitica.id_pedido = b.pedido_beagle
 WHERE 1=1
 order by rand()
-limit 3000000"
+limit 2000000"
 
 
 tb <- bq_project_query(projectid,query)
@@ -761,6 +761,7 @@ df_tabela <- df %>% filter(data_pedido >= '2023-08-01') %>% group_by(uf_nova,loc
   "Threshold_medio" = mean(threshold_final,na.rm = TRUE),
   "Threshold_mediano" = median(threshold_final,na.rm = TRUE))
 
+df_tabela %>% View()
 #Repasso as faixas para os valores calculados
 df_tabela <- df_tabela %>%
   mutate(Faixa = case_when(
