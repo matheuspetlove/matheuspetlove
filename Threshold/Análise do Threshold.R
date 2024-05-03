@@ -2,7 +2,6 @@ library(dplyr)
 library(bigrquery)
 library(ggplot2)
 library(tidyr)
-library(flextable)
 library(shiny)
 library(plotly)
 projectid = "petlove-dataeng-prod-01"
