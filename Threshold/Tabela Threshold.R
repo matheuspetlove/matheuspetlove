@@ -844,3 +844,4 @@ grafico <- periodo %>%
 grafico
 ggsave("grafico.png", plot = grafico, width = 10, height = 6, units = "in", dpi = 300)
 
+#Teste
