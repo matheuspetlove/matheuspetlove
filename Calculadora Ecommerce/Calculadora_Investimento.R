@@ -12,7 +12,7 @@ bq_auth(use_oob = TRUE, cache = FALSE)
 custo_rest_min_aux = 0.8 #20% a menos nao pode ultrapassar isso para reduzir mutio uma campanha de um mes para outro
 custo_rest_max_aux = 1.2 #20% a mais nao pode22 ultrapassar isso para aumentar mutio uma campanha de um mes para outro
 custo_tot= 3382494 # investimento de face + google  sem app do ultimo mes
-month_rest = "2024-03-01" #ultimo mes (se final mes para proximo, colocar mes corrente)
+month_rest = "2024-04-01" #ultimo mes (se final mes para proximo, colocar mes corrente)
 
 sql <- "
  with custo_face_google as (
